@@ -1,0 +1,154 @@
+---
+title: "WEMEET – 유아용 모빌리티 (엄마 AI + 성장 모니터링)"
+author: "김동균"
+date: "2024-06"
+format: html
+editor: visual
+---
+
+# 1. 프로젝트 개요
+- 기간: 2024.03 ~ 2024.06  
+- 발주처 / 근무처: 한국GM / 국민대학교 산학협력  
+- 목표: 유아의 정서적 안정과 성장을 동시에 지원하는 **엄마 AI 모빌리티** 개발  
+- 내가 맡은 역할:
+  - STT 결과 보정 (간단한 임베딩/룰 기반 보정)
+  - GPT-3.5 API 호출 기반 엄마 톤 대화
+  - 대화 요약 기능 구현
+  - GPT 활용 심리/성장 상담 코멘트 생성
+  - Jetson Nano + 카메라 2대를 이용한 키 성장 모니터링
+
+---
+
+# 주의
+아래 코드는 **포트폴리오/보고용** 예시 코드입니다.  
+보안을 위해 실제 API Key를 포함하지 않았으며, 실행되지 않습니다.  
+
+---
+
+# 2. 대화 AI 모듈
+
+## 2.1 STT 결과 보정 (임베딩 활용 예시)
+
+```{python}
+# 실행 예시 (포트폴리오용 코드)
+from sentence_transformers import SentenceTransformer, util
+
+model = SentenceTransformer("distiluse-base-multilingual-cased")
+query = "엄마 놀짜"   # STT에서 잘못 인식된 결과
+candidates = ["엄마 놀자", "엄마 밥 줘", "엄마 안아줘"]
+
+query_vec = model.encode(query)
+cand_vecs = model.encode(candidates)
+
+best = candidates[util.cos_sim(query_vec, cand_vecs).argmax()]
+print("보정된 문장:", best)
+```
+
+## 2.2 GPT-3.5 엄마 톤 대화
+
+```{python}
+
+# 실제 실행 불가 (API Key 미포함)
+# from openai import OpenAI
+# client = OpenAI(api_key="YOUR_API_KEY")  # 더미 키
+
+# response = client.chat.completions.create(
+#     model="ft:gpt-3.5-turbo:project-momAI-202406",
+#     messages=[
+#         {"role": "system", "content": "너는 엄마처럼 아이에게 대화하는 AI야."},
+#         {"role": "user", "content": best}
+#     ]
+# )
+
+# print("엄마 AI 응답:", response.choices[0].message["content"])
+
+
+```
+
+# 3. 대화 요약
+
+```{python}
+
+conversation_log = [
+    {"user": "엄마 나 친구랑 놀고 싶어", "ai": "좋아~ 누구랑 놀고 싶어?"},
+    {"user": "민수랑", "ai": "그래, 민수랑 즐겁게 놀아보자"}
+]
+
+summary_prompt = "아래 대화를 한 줄로 요약해줘."
+# response = client.chat.completions.create(
+#     model="gpt-3.5-turbo",
+#     messages=[
+#         {"role": "system", "content": summary_prompt},
+#         {"role": "user", "content": str(conversation_log)}
+#     ]
+# )
+# print("대화 요약:", response.choices[0].message["content"])
+
+```
+
+# 4. 심리 상담
+
+```{python}
+
+psych_prompt = """
+아래 아이의 대화에서 심리 상태를 분석해줘.
+아이의 정서(불안/안정/기쁨 등)를 한 줄 코멘트로 작성.
+"""
+
+# response = client.chat.completions.create(
+#     model="gpt-3.5-turbo",
+#     messages=[
+#         {"role": "system", "content": psych_prompt},
+#         {"role": "user", "content": str(conversation_log)}
+#     ]
+# )
+# print("심리 상담 코멘트:", response.choices[0].message["content"])
+
+```
+
+# 5. 성장 모니터링 + 상담
+
+## 5.1 Jetson Nano + 카메라 입력
+
+```{python}
+
+import cv2
+capL = cv2.VideoCapture(0)  # 좌측 카메라
+capR = cv2.VideoCapture(1)  # 우측 카메라
+# (스테레오 비전 → 키포인트 추출 과정은 별도 구현)
+
+```
+
+## 5.2 성장 데이터 예시 + 상담
+
+```{python}
+
+growth_data = {"height_today": 92.3, "growth_week": +0.7}
+
+growth_prompt = f"""
+아래 데이터를 바탕으로 성장 상담 리포트를 작성해줘.
+- 오늘 키: {growth_data['height_today']}cm
+- 지난주 대비 성장: {growth_data['growth_week']}cm
+"""
+
+# response = client.chat.completions.create(
+#     model="gpt-3.5-turbo",
+#     messages=[{"role": "system", "content": growth_prompt}]
+# )
+# print("성장 상담 리포트:", response.choices[0].message["content"])
+
+```
+
+
+# 6. 결과 및 정리
+
+STT 결과 → 간단한 보정 기법으로 오류 완화
+
+GPT-3.5 API 파인튜닝 모델 → 엄마 톤 대화 가능
+
+대화 요약/심리 상담/성장 리포트 → 부모가 확인할 수 있는 피드백 제공
+
+Jetson Nano + 카메라 2대 → ±2~3cm 오차로 키 성장 추정
+
+내 기여:
+대화 처리 파이프라인 설계, GPT API 활용, 대화 요약·상담 기능 구현, 성장 모니터링 로직 참여

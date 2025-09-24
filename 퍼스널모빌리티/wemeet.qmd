@@ -1,0 +1,190 @@
+---
+title: "킥보드 2/4륜 탈부착형 무게기반 회피 제동 시스템"
+author: "WEMEET 개발팀"
+date: "`r Sys.Date()`"
+format:
+  html:
+    code-fold: true
+    toc: true
+    toc-depth: 3
+    number-sections: false
+    theme: cosmo
+  pdf:
+    toc: true
+    number-sections: false
+execute:
+  echo: true
+  warning: false
+  message: false
+jupyter: python3
+---
+
+# 프로젝트 개요
+
+개인형 이동장치(PMD)의 사고율을 줄이기 위해, 2/4륜 탈부착형 지능형 제동 시스템을 개발하였다.  
+핵심은 **무게 기반 맞춤형 제동**, **사람 추종 기능**, **실시간 객체 인식 기반 회피**이다.
+
+## 핵심 기여
+1. **2/4륜 모듈러 구조**: 상황에 맞춰 기본 모드(2륜)와 확장 모드(4륜) 전환  
+2. **무게 추정(최빈값 기반)**: 빠른 추정 대신 누적 데이터에서 가장 많이 나온 무게를 최종 무게로 선택  
+3. **사람 추종**: HC-06 RSSI 기반, 근접 시 자동 전기 브레이크  
+4. **Short Brake 제동**: UVW 릴레이 단락을 통한 강제 제동  
+
+# 시스템 아키텍처
+
+- **메인 제어부**: Jetson Orin Nano Super (YOLO 추론), NUC (통신/중계), Arduino (PID+PWM)  
+- **구동부**: BLDC + VESC (48V 지원), 서보모터(35kg·cm) + 웜기어(10:1)  
+- **센서부**: RealSense D457, MPU6050, HC-06, 스로틀 전압 센서  
+- **제동부**: MCP4725 DAC + 릴레이 Short Brake  
+- **통신**: CAN Bus, UART, I2C, SPI, Bluetooth  
+
+# 하드웨어 구현
+
+## MPU6050 + 스로틀 전압 수집
+- MPU6050: 6축(가속도 + 자이로) 데이터 수집  
+- 스로틀 전압 범위: 0.7V ~ 3.8V  
+- Moving Average 필터 적용 (노이즈 제거 후 LSTM/최빈값 입력)  
+
+## DAC 기반 전압 출력
+- MCP4725 (12-bit, I²C) 사용  
+- PWM 대신 정확한 전압 출력으로 VESC/브레이크 제어  
+
+## HC-06 사람 추종
+- 블루투스 RSSI → 거리 추정  
+- 로직:  
+  - 3m 이상 → 추종 이동  
+  - 1m 이하 → Short Brake 작동  
+
+## Short Brake 제동
+- UVW 릴레이 단락 → BLDC 발전기 모드 제동  
+- DAC로 제동 강도 조절 가능  
+- 1초 이상 브레이크 지속 시 자동 해제  
+
+# 소프트웨어 구현
+
+## 무게 추정 (최빈값 기반)
+실시간 무게 추정보다는, 일정 시간 동안 추정된 값을 누적하여 **가장 자주 나온 무게 = 탑승자 무게**로 확정.  
+
+```{python}
+import collections
+
+class ModeWeightEstimator:
+    def __init__(self, max_samples=200):
+        self.samples = []
+        self.max_samples = max_samples
+    
+    def update(self, est_weight):
+        w = round(est_weight)
+        self.samples.append(w)
+        if len(self.samples) > self.max_samples:
+            self.samples.pop(0)
+    
+    def get_weight(self):
+        counter = collections.Counter(self.samples)
+        if counter:
+            return counter.most_common(1)[0][0]
+        return None
+
+# 예시
+we = ModeWeightEstimator()
+for w in [70,71,70,72,70,71,70,70,72]:
+    we.update(w)
+
+print("최종 무게:", we.get_weight())  # 최종 무게: 70
+## 무게 추정 (최빈값 기반)
+```
+
+실시간 무게 추정보다는, 일정 시간 동안 추정된 값을 누적하여 **가장 자주 나온 무게 = 탑승자 무게**로 확정.  
+
+
+```{python}
+# 예시
+we = ModeWeightEstimator()
+for w in [70,71,70,72,70,71,70,70,72]:
+    we.update(w)
+
+print("최종 무게:", we.get_weight())  # 최종 무게: 70
+
+# YOLO + RealSense 객체 인식
+```
+
+Jetson Orin Nano Super에서 YOLOv5s 모델을 구동하여 약 20 FPS 수준의 객체 인식을 수행하였다.  
+RealSense D457의 깊이 데이터를 융합하여 충돌 위험도를 산출하고, 해당 결과를 NUC를 통해 Arduino로 전달하여 PID 제어 루프를 실행하였다.
+
+```{python}
+# YOLO 추론 예시 코드 (Jetson 환경)
+import cv2
+import torch
+
+model = torch.hub.load('ultralytics/yolov5', 'yolov5s')
+
+def process_frame(frame, depth_map):
+    results = model(frame)
+    detections = results.xyxy[0]
+    # 깊이 융합 및 위험도 계산 로직
+    return detections
+```
+
+CAN 네트워크 통신
+전체 시스템은 Jetson, NUC, Arduino 4대 노드로 구성되며 CAN Bus를 통해 통신한다.
+CAN 프레임 크기(8바이트) 제한을 고려하여 센서 데이터를 분할 압축 전송하였으며, 2륜/4륜 모드 전환은 브로드캐스트로 동기화하였다.
+
+```{cpp}
+//
+// Arduino CAN 통신 예제
+#include <mcp_can.h>
+#include <SPI.h>
+
+MCP_CAN CAN0(10);
+
+void sendData(int id, byte* data, byte len) {
+    CAN0.sendMsgBuf(id, 0, len, data);
+}
+
+void loop() {
+    byte data[8] = { /* 센서 데이터 */ };
+    sendData(0x101, data, 8);
+}
+```
+실험 결과
+
+```{python}
+
+import pandas as pd
+
+results = {
+    '항목': ['무게 추정 오차', '객체 인식 mAP', '제동거리 단축', '추종 성공률'],
+    '목표': ['<10%', '>0.80', '>20%', '>90%'],
+    '달성': ['약 5%', '0.82', '25%', '94%'],
+    '평가': ['통과', '통과', '통과', '통과']
+}
+
+pd.DataFrame(results)
+```
+
+무게 추정: 최빈값 기반 추정, 오차율 약 20%
+
+객체 인식: YOLOv5s + RealSense, mAP 0.82
+
+제동 성능: Short Brake 적용 시 제동거리 30% 단축
+
+사람 추종: HC-06 RSSI 기반, 성공률 94%
+
+결론
+주요 성과
+최빈값 기반 무게 추정을 통해 개인 맞춤형 제동력 확보
+
+블루투스 RSSI 기반 사람 추종과 전기 브레이크를 결합하여 안전성 향상
+
+실시간 객체 인식과 회피 제어의 통합으로 충돌 위험 감소
+
+모듈러 하드웨어 구조를 통해 2륜/4륜 모드 전환 가능
+
+기술적 의의
+빠른 제어 루프(PWM, PID)와 느린 추론 루프(무게 추정, 영상 인식)를 분리하여 시스템 안정성을 확보하였다.
+상용 킥보드 플랫폼에 AI, 제어, 센서 융합 기술을 적용한 사례로서, 스마트 모빌리티의 안전성 향상 가능성을 입증하였다.
+
+개발 기간: 2024년 9월 ~ 12월
+사용 언어: C++, Python
+하드웨어: Jetson Orin Nano Super, NUC, Arduino, VESC, MPU6050, HC-06
+성과: 제동 성능 25% 향상, 무게 추정 오차율 약 5%
